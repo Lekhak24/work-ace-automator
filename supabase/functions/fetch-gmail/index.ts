@@ -245,8 +245,11 @@ serve(async (req) => {
           }),
         });
 
+        const refreshText = await refreshResponse.text();
+        console.log("Refresh response status:", refreshResponse.status, "body:", refreshText);
+        
         if (refreshResponse.ok) {
-          const refreshData = await refreshResponse.json();
+          const refreshData = JSON.parse(refreshText);
           accessToken = refreshData.access_token;
           
           // Update stored token
@@ -257,8 +260,20 @@ serve(async (req) => {
               google_token_expires_at: new Date(Date.now() + refreshData.expires_in * 1000).toISOString(),
             })
             .eq("user_id", user.id);
+            
+          console.log("Token refreshed successfully");
         } else {
-          throw new Error("Failed to refresh Google token. Please reconnect your account.");
+          // Clear invalid tokens so user can reconnect
+          await supabase
+            .from("user_settings")
+            .update({
+              google_access_token: null,
+              google_refresh_token: null,
+              google_token_expires_at: null,
+            })
+            .eq("user_id", user.id);
+            
+          throw new Error("Google token expired. Please reconnect your Google account in Settings.");
         }
       }
     }
