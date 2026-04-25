@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,17 +24,20 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
   const redirectUri = "https://jjsdaubedeyuuywilvjt.supabase.co/functions/v1/google-oauth-callback";
   const scope = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile";
 
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=${clientId}` +
-    `&response_type=code` +
-    `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-    `&scope=${encodeURIComponent(scope)}` +
-    `&state=${userId}` +
-    `&access_type=offline` +
-    `&prompt=consent`;
+  const authUrl = useMemo(() =>
+    `https://accounts.google.com/o/oauth2/v2/auth?` +
+      `client_id=${clientId}` +
+      `&response_type=code` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent(scope)}` +
+      `&state=${userId}` +
+      `&access_type=offline` +
+      `&prompt=consent`,
+    [clientId, redirectUri, scope, userId]
+  );
 
   useEffect(() => {
-    checkConnectionStatus();
+    void checkConnectionStatus();
     
     // Listen for OAuth callback messages
     const handleMessage = (event: MessageEvent) => {
@@ -42,11 +45,13 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
         setIsConnected(true);
         setIsConnecting(false);
         setShowManualFlow(false);
+        void checkConnectionStatus();
         toast({
           title: "Connected!",
           description: "Your Google account is now connected.",
         });
       } else if (event.data?.type === 'GOOGLE_AUTH_ERROR') {
+        setIsConnected(false);
         setIsConnecting(false);
         toast({
           title: "Connection failed",
@@ -63,14 +68,12 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
   const checkConnectionStatus = async () => {
     const { data } = await supabase
       .from("user_settings")
-      .select("*")
+      .select("google_access_token, email_sync_enabled")
       .eq("user_id", userId)
       .maybeSingle();
 
-    const settings = data as { google_access_token?: string; email_sync_enabled?: boolean } | null;
-    if (settings?.google_access_token) {
-      setIsConnected(true);
-    }
+    const settings = data as { google_access_token?: string | null; email_sync_enabled?: boolean | null } | null;
+    setIsConnected(Boolean(settings?.google_access_token && settings?.email_sync_enabled !== false));
   };
 
   const handleConnect = () => {
@@ -96,7 +99,7 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
       if (popup.closed) {
         clearInterval(checkClosed);
         setIsConnecting(false);
-        checkConnectionStatus();
+        void checkConnectionStatus();
       }
     }, 500);
   };
@@ -127,17 +130,26 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
         { method: "GET" }
       );
 
-      if (response.ok) {
-        setIsConnected(true);
-        setShowManualFlow(false);
-        setAuthCode("");
-        toast({
-          title: "Connected!",
-          description: "Your Google account is now connected.",
-        });
-      } else {
-        throw new Error("Failed to exchange authorization code");
+      const html = await response.text();
+
+      if (!response.ok) {
+        const errorMatch = html.match(/Authentication failed:([^<]+)/i);
+        throw new Error(errorMatch?.[1]?.trim() || "Failed to exchange authorization code");
       }
+
+      const success = html.includes("GOOGLE_AUTH_SUCCESS") || html.includes("Authentication successful");
+      if (!success) {
+        throw new Error("Google connection could not be verified");
+      }
+
+      setIsConnected(true);
+      setShowManualFlow(false);
+      setAuthCode("");
+      await checkConnectionStatus();
+      toast({
+        title: "Connected!",
+        description: "Your Google account is now connected.",
+      });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : "Unknown error";
       toast({
@@ -169,7 +181,11 @@ const GoogleConnect = ({ userId, userEmail }: GoogleConnectProps) => {
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || "Failed to fetch emails");
+        const message = result.error || "Failed to fetch emails";
+        if (message.toLowerCase().includes("reconnect") || message.toLowerCase().includes("permission")) {
+          setIsConnected(false);
+        }
+        throw new Error(message);
       }
 
       const messages = [];
