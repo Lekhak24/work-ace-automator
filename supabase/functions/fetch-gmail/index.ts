@@ -292,7 +292,23 @@ serve(async (req) => {
     if (!messagesResponse.ok) {
       const errorText = await messagesResponse.text();
       console.error("Gmail API error:", errorText);
-      throw new Error("Failed to fetch emails from Gmail");
+      
+      // Detect insufficient scope - common when Gmail API not enabled or scope not granted
+      if (errorText.includes("insufficientPermissions") || errorText.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT")) {
+        // Clear tokens to force reconnection
+        await supabase
+          .from("user_settings")
+          .update({
+            google_access_token: null,
+            google_refresh_token: null,
+            google_token_expires_at: null,
+          })
+          .eq("user_id", user.id);
+          
+        throw new Error("Gmail access not granted. Please enable the Gmail API in Google Cloud Console and add the Gmail scope to your OAuth consent screen, then reconnect your account.");
+      }
+      
+      throw new Error(`Gmail API error: ${messagesResponse.status} - ${errorText.slice(0, 200)}`);
     }
 
     const messagesData = await messagesResponse.json();
